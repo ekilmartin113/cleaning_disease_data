@@ -1,0 +1,133 @@
+---
+title: "MDSS Data Processing for the CD Unit Annual Report"
+subtitle: "Cleaning Demographic Data Retrieved from the MDSS Disease-Specific Search"
+author: Emily Kilmartin
+date: 2025-06-03
+execute:
+    echo: true
+knitr: 
+    opts_chunk:
+        message: false
+        warning: true
+format: 
+    html:
+        toc: true
+        embed-resources: true
+---
+
+------------------------------------------------------------------------
+```{r}
+
+#!/usr/bin/env Rscript
+
+library(jsonlite)
+library(dplyr)
+library(stringr)
+library(lubridate)
+library(readr)
+
+# -------- Helper functions --------
+
+# Normalize names: lowercase + remove non-alphanumeric for matching
+normalize_name <- function(name) {
+  tolower(name) %>% str_replace_all("[^a-z0-9]", "")
+}
+
+# Assign age range using cut() for ordered factor
+assign_age_range <- function(age) {
+  cut(
+    age,
+    breaks = c(-Inf, 0, 9, 19, 29, 39, 49, 59, 69, 79, Inf),
+    labels = c("<1", "1-9", "10-19", "20-29", "30-39", "40-49", "50-59", "60-69", "70-79", ">80"),
+    right = TRUE,
+    include.lowest = TRUE,
+    ordered_result = TRUE
+  )
+}
+
+# Extract disease name from filename ("Disease Export.csv")
+extract_disease_from_filename <- function(filepath) {
+  base <- basename(filepath)
+  name <- str_remove(base, "\\.csv$|\\.txt$|\\.xlsx$")
+  str_trim(str_split(name, " Export")[[1]][1])
+}
+
+# Placeholder for your existing check_config() function
+check_config <- function() {
+  cat(strrep("~", 60), "\nChecking configuration...\n")
+  # Your actual config check logic here if any
+}
+
+clean_date <- function(x) {
+  x <- as.character(x)
+  x[x %in% c("", ".", "NA", "N/A", "NULL", "unknown", "Unknown", "0")] <- NA
+  parse_date_time(x, orders = c("mdy", "ymd", "y-m-d", "m/d/y", "dmy", "y/%m/%d", "y%m%d"), quiet = TRUE)
+}
+
+
+load_and_process_file <- function(file) {
+  disease_raw <- extract_disease_from_filename(file)
+  disease_norm <- normalize_name(disease_raw)
+  
+  df <- read_csv(file, show_col_types = FALSE)
+  
+  df_filtered <- df %>%
+    mutate(
+      Date_of_Birth = clean_date(Date_of_Birth),
+      Referral_Date = clean_date(Referral_Date)
+    ) %>%
+    drop_na(Date_of_Birth, Referral_Date) %>%
+    mutate(
+      Age = floor(interval(Date_of_Birth, Referral_Date) / years(1)),
+      Age_Range = assign_age_range(Age),
+      Referral_Year = year(Referral_Date),
+      Referral_Month = month(Referral_Date, label = TRUE, abbr = TRUE),
+      Disease_Name = disease_raw
+    )
+  
+  # Define age range levels to assign sorting order
+  age_range_levels <- c("<1", "1-9", "10-19", "20-29", "30-39", "40-49", 
+                        "50-59", "60-69", "70-79", ">80")
+  
+  df_filtered <- df_filtered %>%
+    mutate(
+      Age_Range = as.character(Age_Range),
+      Age_Range_Sort = match(Age_Range, age_range_levels)
+    )
+  
+  cat("Processing file:", file, "- Age_Range class:", class(df_filtered$Age_Range), "\n")
+  
+  return(df_filtered)
+}
+
+
+# -------- Main --------
+
+check_config()
+
+# Adjust the folder path to where your disease export files are stored
+data_folder <- "disease_exports"
+
+files <- list.files(path = data_folder, pattern = "Export.*\\.csv$", full.names = TRUE)
+
+if (length(files) == 0) {
+  stop("No disease export files found in ", data_folder)
+}
+
+cat("Found", length(files), "files to process.\n")
+
+all_data <- lapply(files, load_and_process_file)
+all_data <- bind_rows(all_data)
+
+all_data <- all_data %>%
+  mutate(
+    Referral_Date = as.Date(Referral_Date),
+    Date_of_Birth = as.Date(Date_of_Birth)
+  )
+
+cat("Writing combined data to combined_disease_data.csv\n")
+write_csv(all_data, "combined_disease_data.csv")
+
+cat("Done!\n")
+
+```
